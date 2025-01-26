@@ -46,14 +46,16 @@ async fn handle(client_ip: IpAddr, req: Request<Body>) -> Result<Response<Body>,
     match hyper_reverse_proxy::call(client_ip, "http://127.0.0.1:8084", req).await {
         Ok(mut response) => {
             if !tag_requested.is_empty() {
+                println!("tag_requested not empty");
                 let token = generate_token().to_string();
                 response.headers_mut().append(
                     SET_COOKIE,
                     HeaderValue::from_str(&*("dop_token=".to_owned() + token.as_str())).unwrap()
                 );
-                // let _ = save_token(token.as_str(), tag_requested.as_str());
+                let _ = save_token(token.as_str(), tag_requested.as_str()).unwrap();
             } else {
                 // check token
+                println!("tag_requested empty");
             }
             Ok(response)
         }
@@ -91,7 +93,8 @@ fn generate_token() -> Uuid {
 }
 
 fn extract_tag_from_request(uri_path: &str) -> Option<String> {
-    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/?$").unwrap();
+    println!("match in {uri_path} ? ");
+    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/playlist\.m3u8$").unwrap();
     if let Some(caps) = re.captures(uri_path) {
         let str = caps.get(1).unwrap().as_str().to_string();
         println!("match");
