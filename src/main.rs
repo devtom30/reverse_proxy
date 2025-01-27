@@ -7,6 +7,7 @@ use regex::{Captures, Regex};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::{convert::Infallible, net::SocketAddr};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use valkey::Client;
 
@@ -17,7 +18,7 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
     println!("-----------------------------------------");
     let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
     req.headers().iter().for_each(|(header_name, header_value)| {
@@ -52,7 +53,14 @@ async fn handle(client_ip: IpAddr, req: Request<Body>) -> Result<Response<Body>,
                     SET_COOKIE,
                     HeaderValue::from_str(&*("dop_token=".to_owned() + token.as_str())).unwrap()
                 );
-                let _ = save_token(token.as_str(), tag_requested.as_str()).unwrap();
+                let mut token_map = shared.lock().unwrap();
+                if token_map.get(&tag_requested).is_none() {
+                    let mut token_list: Vec<String> = vec!();
+                    token_list.push(token);
+                    token_map.insert(tag_requested.clone(), token_list);
+                } else {
+                    token_map.get_mut(&tag_requested).unwrap().push(token);
+                }
             } else {
                 // check token
                 println!("tag_requested empty");
@@ -71,11 +79,17 @@ async fn main() {
     let bind_addr = "127.0.0.1:8000";
     let addr:SocketAddr = bind_addr.parse().expect("Could not parse ip:port.");
 
-    let mut token_map: HashMap<String, String> = HashMap::new();
+    let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
+    let shared = Arc::new(Mutex::new(HashMap::new()));
+
     let make_svc = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr().ip();
+        let shared = shared.clone();
         async move {
-            Ok::<_, Infallible>(service_fn(move |req| handle(remote_addr, req)))
+            Ok::<_, Infallible>(service_fn(move |req| {
+                let shared = shared.clone();
+                handle(remote_addr, req, shared)
+            }))
         }
     });
 

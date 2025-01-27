@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 hyper-reverse-proxy = "0.5"
 hyper = { version = "0.14", features = ["full"] }
+hyper-server = "0.6.0"
 hyper-headers = "0.0.0"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.12.1", features = ["v4"] }
