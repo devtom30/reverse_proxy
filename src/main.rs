@@ -7,6 +7,7 @@ use regex::{Captures, Regex};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::{convert::Infallible, net::SocketAddr};
+use std::ops::{Add, DerefMut};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use valkey::Client;
@@ -18,7 +19,79 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
+async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<SharedState>>) -> Result<Response<Body>, Infallible> {
+    let tag_extracted_option = extract_tag_from_request(req.uri().path());
+
+    let mut redirect_uri = String::from("http://127.0.0.1:8084");
+    if tag_extracted_option.is_none() {
+        // no tag requested
+        // let's see if we have a valid token
+        // look into cookie for our token
+        let cookie_hashmap = extract_cookie_map(&req);
+        let mut tag_requested = String::from("");
+        let token_in_cookie = cookie_hashmap.get(&String::from(TOKEN_NAME));
+        if token_in_cookie.is_none() {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty()).unwrap());
+        }
+
+        // we have a token, let's see if it's valid
+        let token = token_in_cookie.unwrap();
+        match find_tag_relative_to_token(token, &shared.lock().as_ref().unwrap().map) {
+            // invalid token
+            None => {
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty()).unwrap())
+            }
+            // valid token relative to tag
+            Some(tag) => {
+                let redirect_to_tag_files = String::from("play/") + tag;
+                redirect_uri.push_str("/");
+                redirect_uri.push_str(&redirect_to_tag_files);
+                println!("redirect now to {redirect_uri}");
+                match hyper_reverse_proxy::call(client_ip, &redirect_uri, req).await {
+                    Ok(response) => { Ok(response) }
+                    Err(_error) => {
+                        Ok(Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::empty())
+                            .unwrap())
+                    }
+                }
+            }
+        }
+    } else {
+        let tag_requested = tag_extracted_option.unwrap();
+        match hyper_reverse_proxy::call(client_ip, &redirect_uri, req).await {
+            Ok(mut response) => {
+                let mut token_map = shared.lock().unwrap();
+                let token = generate_token().to_string();
+                let header_value = String::from(TOKEN_NAME).add("=").add(&token);
+                println!("set cookie {header_value}");
+                response.headers_mut().append(
+                    SET_COOKIE,
+                    HeaderValue::from_str(&header_value).unwrap()
+                );
+                if token_map.map.get(&tag_requested).is_none() {
+                    let mut token_list: Vec<String> = vec!();
+                    token_list.push(token);
+                    token_map.map.insert(tag_requested.clone(), token_list);
+                } else {
+                    token_map.map.get_mut(&tag_requested).unwrap().push(token);
+                }
+                Ok(response)
+            }
+            Err(_error) => {Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap())}
+        }
+    }
+}
+
+fn extract_cookie_map(req: &Request<Body>) -> HashMap<String, String> {
     println!("-----------------------------------------");
     let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
     req.headers().iter().for_each(|(header_name, header_value)| {
@@ -31,46 +104,15 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
         }
     });
     println!("-----------------------------------------");
+    cookie_hashmap
+}
 
-    let tag_extracted_option = extract_tag_from_request(req.uri().path());
-    let mut tag_requested = String::from("");
-    if tag_extracted_option.is_none()
-        && cookie_hashmap.get(&String::from(TOKEN_NAME)).is_none() {
-        return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::empty())
-            .unwrap());
+fn find_tag_relative_to_token<'a>(token: &str, tag_token_map: &'a HashMap<String, Vec<String>>) -> Option<&'a String> {
+    if let Some((tag, tokens)) = tag_token_map.iter()
+        .find(|(tag, tokens)| tokens.contains(&String::from(token))) {
+        Some(tag)
     } else {
-        tag_requested = tag_extracted_option.clone().unwrap().clone();
-    }
-
-    match hyper_reverse_proxy::call(client_ip, "http://127.0.0.1:8084", req).await {
-        Ok(mut response) => {
-            if !tag_requested.is_empty() {
-                println!("tag_requested not empty");
-                let token = generate_token().to_string();
-                response.headers_mut().append(
-                    SET_COOKIE,
-                    HeaderValue::from_str(&*("dop_token=".to_owned() + token.as_str())).unwrap()
-                );
-                let mut token_map = shared.lock().unwrap();
-                if token_map.get(&tag_requested).is_none() {
-                    let mut token_list: Vec<String> = vec!();
-                    token_list.push(token);
-                    token_map.insert(tag_requested.clone(), token_list);
-                } else {
-                    token_map.get_mut(&tag_requested).unwrap().push(token);
-                }
-            } else {
-                // check token
-                println!("tag_requested empty");
-            }
-            Ok(response)
-        }
-        Err(_error) => {Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::empty())
-            .unwrap())}
+        None
     }
 }
 
@@ -80,7 +122,11 @@ async fn main() {
     let addr:SocketAddr = bind_addr.parse().expect("Could not parse ip:port.");
 
     let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
-    let shared = Arc::new(Mutex::new(HashMap::new()));
+    let mut shared = Arc::new(Mutex::new(
+        SharedState {
+            map: HashMap::new()
+        }
+    ));
 
     let make_svc = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr().ip();
@@ -88,6 +134,7 @@ async fn main() {
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let shared = shared.clone();
+                println!("shared state : {:?}", shared);
                 handle(remote_addr, req, shared)
             }))
         }
@@ -108,7 +155,7 @@ fn generate_token() -> Uuid {
 
 fn extract_tag_from_request(uri_path: &str) -> Option<String> {
     println!("match in {uri_path} ? ");
-    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/playlist\.m3u8$").unwrap();
+    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/?$").unwrap();
     if let Some(caps) = re.captures(uri_path) {
         let str = caps.get(1).unwrap().as_str().to_string();
         println!("match");
@@ -153,4 +200,9 @@ fn save_token(token: &str, tag: &str) -> Result<(), Box<dyn std::error::Error>> 
     println!("token {token} {value}");
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct SharedState {
+    map: HashMap<String, Vec<String>>
 }
