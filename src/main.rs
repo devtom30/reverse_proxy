@@ -19,34 +19,12 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
 }
 
 async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
-    println!("-----------------------------------------");
-    let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
-    req.headers().iter().for_each(|(header_name, header_value)| {
-        println!("{:?} {:?}", header_name, header_value);
-        if header_name == "cookie" {
-            cookie_hashmap = extract_cookie_values(header_value);
-            cookie_hashmap.iter().for_each(|(name, value)| {
-                println!("cookie value : {name} - {value}");
-            });
-        }
-    });
-    println!("-----------------------------------------");
-
+    let redirect_uri = "http://127.0.0.1:8084";
     let tag_extracted_option = extract_tag_from_request(req.uri().path());
-    let mut tag_requested = String::from("");
-    if tag_extracted_option.is_none()
-        && cookie_hashmap.get(&String::from(TOKEN_NAME)).is_none() {
-        return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::empty())
-            .unwrap());
-    } else {
-        tag_requested = tag_extracted_option.clone().unwrap().clone();
-    }
-
-    match hyper_reverse_proxy::call(client_ip, "http://127.0.0.1:8084", req).await {
-        Ok(mut response) => {
-            if !tag_requested.is_empty() {
+    if tag_extracted_option.is_some() {
+        let tag_requested = tag_extracted_option.unwrap();
+        return match hyper_reverse_proxy::call(client_ip, redirect_uri, req).await {
+            Ok(mut response) => {
                 println!("tag_requested not empty");
                 let token = generate_token().to_string();
                 response.headers_mut().append(
@@ -61,10 +39,44 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
                 } else {
                     token_map.get_mut(&tag_requested).unwrap().push(token);
                 }
-            } else {
-                // check token
-                println!("tag_requested empty");
+                Ok(response)
             }
+            Err(_error) => {
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap())
+            }
+        }
+    }
+
+    println!("-----------------------------------------");
+    let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
+    req.headers().iter().for_each(|(header_name, header_value)| {
+        println!("{:?} {:?}", header_name, header_value);
+        if header_name == "cookie" {
+            cookie_hashmap = extract_cookie_values(header_value);
+            cookie_hashmap.iter().for_each(|(name, value)| {
+                println!("cookie value : {name} - {value}");
+            });
+        }
+    });
+    println!("-----------------------------------------");
+
+
+    let mut tag_requested = String::from("");
+    if cookie_hashmap.get(&String::from(TOKEN_NAME)).is_none() {
+        return Ok(Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .unwrap());
+    }
+
+    match hyper_reverse_proxy::call(client_ip, "http://127.0.0.1:8084", req).await {
+        Ok(mut response) => {
+            // check token
+            println!("tag_requested empty");
+
             Ok(response)
         }
         Err(_error) => {Ok(Response::builder()
@@ -108,7 +120,7 @@ fn generate_token() -> Uuid {
 
 fn extract_tag_from_request(uri_path: &str) -> Option<String> {
     println!("match in {uri_path} ? ");
-    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/playlist\.m3u8$").unwrap();
+    let re = Regex::new(r"^/tag/(?<tag>[^/]+)/?$").unwrap();
     if let Some(caps) = re.captures(uri_path) {
         let str = caps.get(1).unwrap().as_str().to_string();
         println!("match");
