@@ -63,26 +63,65 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
     });
     println!("-----------------------------------------");
 
+    let token_found = match cookie_hashmap.get(&String::from(TOKEN_NAME)) {
+        None => {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap());
+        }
+        Some(token) => {
+            token
+        }
+    };
 
-    let mut tag_requested = String::from("");
-    if cookie_hashmap.get(&String::from(TOKEN_NAME)).is_none() {
+    // let map = shared;
+    let tag_from_token = find_tag_relative_to_token(token_found, shared);
+    if tag_from_token.is_none() {
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::empty())
             .unwrap());
     }
 
-    match hyper_reverse_proxy::call(client_ip, "http://127.0.0.1:8084", req).await {
-        Ok(mut response) => {
-            // check token
-            println!("tag_requested empty");
-
+    return match hyper_reverse_proxy::call(client_ip, redirect_uri, req).await {
+        Ok(response) => {
             Ok(response)
         }
         Err(_error) => {Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::empty())
             .unwrap())}
+    }
+
+            /*match find_tag_relative_to_token(token, &map) {
+                None => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::empty())
+                        .unwrap());
+                }
+                Some(tag) => {
+                    match hyper_reverse_proxy::call(client_ip, redirect_uri, req).await {
+                        Ok(response) => {
+                            Ok(response)
+                        }
+                        Err(_error) => {Ok(Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::empty())
+                            .unwrap())}
+                    }
+                }
+            }*/
+
+}
+
+fn find_tag_relative_to_token(token: &str, tag_token_map: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Option<String> {
+    if let Some((tag, tokens)) = tag_token_map.lock().unwrap().iter()
+        .find(|(tag, tokens)| tokens.contains(&String::from(token))) {
+        Some(String::from(tag))
+    } else {
+        None
     }
 }
 
