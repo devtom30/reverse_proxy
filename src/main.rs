@@ -7,9 +7,16 @@ use regex::{Captures, Regex};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::{convert::Infallible, net::SocketAddr};
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-use valkey::Client;
+use mongodb::{
+    bson::doc,
+    Client,
+    Collection
+};
+use mongodb::bson::DateTime;
+use serde::Serialize;
 
 const TOKEN_NAME: &str = "dop_token";
 
@@ -18,7 +25,12 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
+async fn handle(
+    client_ip: IpAddr,
+    req: Request<Body>,
+    shared: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    db_client: Arc<Client>,
+) -> Result<Response<Body>, Infallible> {
     let redirect_uri = "http://127.0.0.1:8084";
     let tag_extracted_option = extract_tag_from_request(req.uri().path());
     if tag_extracted_option.is_some() {
@@ -34,11 +46,13 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
                 let mut token_map = shared.lock().unwrap();
                 if token_map.get(&tag_requested).is_none() {
                     let mut token_list: Vec<String> = vec!();
-                    token_list.push(token);
+                    token_list.push(token.clone());
                     token_map.insert(tag_requested.clone(), token_list);
                 } else {
-                    token_map.get_mut(&tag_requested).unwrap().push(token);
+                    token_map.get_mut(&tag_requested).unwrap().push(token.clone());
                 }
+                save_token(db_client.clone(), &token, &tag_requested).await
+                    .expect(&format!("can't save token {} for tag {}", token, tag_requested));
                 Ok(response)
             }
             Err(_error) => {
@@ -133,13 +147,19 @@ async fn main() {
     let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
     let shared = Arc::new(Mutex::new(HashMap::new()));
 
+    let uri = "mongodb://localhost:27017/";
+    let db_client = Arc::new(
+        Client::with_uri_str(uri).await.expect("MongoDB client creation failed"));
+
     let make_svc = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr().ip();
         let shared = shared.clone();
+        let db_client = db_client.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let shared = shared.clone();
-                handle(remote_addr, req, shared)
+                let db_client = db_client.clone();
+                handle(remote_addr, req, shared, db_client)
             }))
         }
     });
@@ -190,18 +210,27 @@ fn extract_cookie_values(header_value: &HeaderValue) -> HashMap<String, String> 
     map
 }
 
-fn save_token(token: &str, tag: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = SocketAddr::from((Ipv6Addr::LOCALHOST, 6379));
-    let mut client = Client::connect(addr)?;
+async fn save_token(client: Arc<Client>, token: &str, tag: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let my_coll: Collection<TagToken> = client
+        .database("dropofculture")
+        .collection("token");
+    let insert_doc = TagToken {
+        tag: tag.to_string(),
+        token: token.to_string(),
+        date_time: DateTime::now()
+    };
 
-    client.set("hello", "world")?;
-    client.set(token, tag)?;
-
-    let value = client.get("hello")?.unwrap();
-    println!("Hello {value}");
-
-    let value = client.get(token)?.unwrap();
-    println!("token {token} {value}");
+    let res = my_coll.insert_one(insert_doc).await?;
+    println!("Inserted a document with _id: {}", res.inserted_id);
 
     Ok(())
 }
+
+#[derive(Serialize)]
+struct TagToken {
+    tag: String,
+    token: String,
+    date_time: DateTime
+}
+
+impl TagToken {}

@@ -13,3 +13,5 @@ uuid = { version = "1.12.1", features = ["v4"] }
 regex = "1.11.1"
 cookie = "0.18.1"
 valkey = "0.0.0-alpha5"
+mongodb = "3.2.1"
+serde = { version = "1.0.217", features = ["derive"] }
