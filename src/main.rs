@@ -11,6 +11,13 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use valkey::Client;
 
+/*
+1. URL request dropofculture.com/tag/TAG
+2. Response with index.html and cookie with TOKEN (dop_token)
+3. JS request to /play with header TOKEN (dop_token)
+4. playlist is sent back and then audio playback can start
+ */
+
 const TOKEN_NAME: &str = "dop_token";
 
 fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
@@ -18,7 +25,7 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
+async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
     let redirect_uri = "http://127.0.0.1:8084";
     let tag_extracted_option = extract_tag_from_request(req.uri().path());
     if tag_extracted_option.is_some() {
@@ -39,6 +46,7 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
                 } else {
                     token_map.get_mut(&tag_requested).unwrap().push(token);
                 }
+                println!("token_map {:?}", token_map);
                 Ok(response)
             }
             Err(_error) => {
@@ -49,42 +57,41 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
             }
         }
     }
-
+    
+    //TODO : don't return error, because chunks arrives as http:://HOST/CHUNK_NAME
+    // so we have to try to get chunk
+    if ! is_play_request(req.uri().path()) {
+        return Ok(Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .unwrap())
+    }
+    
     println!("-----------------------------------------");
     let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
-    req.headers().iter().for_each(|(header_name, header_value)| {
-        println!("{:?} {:?}", header_name, header_value);
-        if header_name == "cookie" {
-            cookie_hashmap = extract_cookie_values(header_value);
-            cookie_hashmap.iter().for_each(|(name, value)| {
-                println!("cookie value : {name} - {value}");
-            });
-        }
-    });
+    let dop_token = req.headers().iter().find(|(header_name, header_value)| {
+        // println!("{:?} {:?}", header_name, header_value);
+        header_name.as_str() == "dop_token"
+    }).map(|(header_name, header_value)| {header_value.to_str().unwrap_or("")})
+        .unwrap_or_default();
     println!("-----------------------------------------");
 
-    let token_found = match cookie_hashmap.get(&String::from(TOKEN_NAME)) {
-        None => {
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap());
-        }
-        Some(token) => {
-            token
-        }
-    };
-
     // let map = shared;
-    let tag_from_token = find_tag_relative_to_token(token_found, shared);
+    let tag_from_token = find_tag_relative_to_token(dop_token, shared);
     if tag_from_token.is_none() {
+        println!("tag_from_token not found");
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::empty())
             .unwrap());
     }
 
-    return match hyper_reverse_proxy::call(client_ip, redirect_uri, req).await {
+    println!("tag_from_token found");
+    let mut uri_new = String::from("http://localhost:8000/tag/");
+    uri_new.push_str(tag_from_token.unwrap().as_str());
+    uri_new.push_str("/playlist.m3u8");
+    let req_new = Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap();
+    return match hyper_reverse_proxy::call(client_ip, redirect_uri, req_new).await {
         Ok(response) => {
             Ok(response)
         }
@@ -117,8 +124,11 @@ async fn handle(client_ip: IpAddr, req: Request<Body>, shared: Arc<Mutex<HashMap
 }
 
 fn find_tag_relative_to_token(token: &str, tag_token_map: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Option<String> {
-    if let Some((tag, tokens)) = tag_token_map.lock().unwrap().iter()
-        .find(|(tag, tokens)| tokens.contains(&String::from(token))) {
+    println!("find_tag_relative_to_token");
+    println!("token: {}", token);
+    println!("tag_token_map: {:?}", tag_token_map);
+    if let Some((tag, _tokens)) = tag_token_map.lock().unwrap().iter()
+        .find(|(_tag, tokens)| tokens.contains(&String::from(token))) {
         Some(String::from(tag))
     } else {
         None
@@ -168,6 +178,11 @@ fn extract_tag_from_request(uri_path: &str) -> Option<String> {
         println!("no match!");
         None
     }
+}
+
+fn is_play_request(uri_path: &str) -> bool {
+    let re = Regex::new(r"^/play$").unwrap();
+    re.is_match(uri_path)
 }
 
 fn extract_cookie_values(header_value: &HeaderValue) -> HashMap<String, String> {
