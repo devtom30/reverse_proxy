@@ -77,22 +77,23 @@ async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<Has
             .unwrap());
     }
 
-    println!("tag_from_token found");
     
     let req_new: Request<Body> = if is_play_request(req.uri().path()) {
+        //TODO put it in properties file
         let mut uri_new = String::from("http://localhost:8000/tag/");
-        uri_new.push_str(tag_from_token.unwrap().as_str());
+        uri_new.push_str(tag_from_token.clone().unwrap().as_str());
         uri_new.push_str("/playlist.m3u8");
         Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap()
     } else {
         //TODO : check that path requested is a EXTINF in playlist
 
         let mut uri_new = String::from("http://localhost:8000/tag/");
-        uri_new.push_str(tag_from_token.unwrap().as_str());
+        uri_new.push_str(tag_from_token.clone().unwrap().as_str());
         uri_new.push_str(req.uri().path());
         Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap()
     };
 
+    println!("tag_from_token found {}", tag_from_token.unwrap());
 
     return match hyper_reverse_proxy::call(client_ip, redirect_uri, req_new).await {
         Ok(response) => {
