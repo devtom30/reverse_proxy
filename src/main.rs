@@ -58,15 +58,6 @@ async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<Has
         }
     }
     
-    //TODO : don't return error, because chunks arrives as http:://HOST/CHUNK_NAME
-    // so we have to try to get chunk
-    if ! is_play_request(req.uri().path()) {
-        return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::empty())
-            .unwrap())
-    }
-    
     println!("-----------------------------------------");
     let mut cookie_hashmap: HashMap<String, String> = HashMap::new();
     let dop_token = req.headers().iter().find(|(header_name, header_value)| {
@@ -87,10 +78,22 @@ async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<Has
     }
 
     println!("tag_from_token found");
-    let mut uri_new = String::from("http://localhost:8000/tag/");
-    uri_new.push_str(tag_from_token.unwrap().as_str());
-    uri_new.push_str("/playlist.m3u8");
-    let req_new = Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap();
+    
+    let req_new: Request<Body> = if is_play_request(req.uri().path()) {
+        let mut uri_new = String::from("http://localhost:8000/tag/");
+        uri_new.push_str(tag_from_token.unwrap().as_str());
+        uri_new.push_str("/playlist.m3u8");
+        Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap()
+    } else {
+        //TODO : check that path requested is a EXTINF in playlist
+
+        let mut uri_new = String::from("http://localhost:8000/tag/");
+        uri_new.push_str(tag_from_token.unwrap().as_str());
+        uri_new.push_str(req.uri().path());
+        Request::builder().uri(uri_new.as_str()).body(Body::empty()).unwrap()
+    };
+
+
     return match hyper_reverse_proxy::call(client_ip, redirect_uri, req_new).await {
         Ok(response) => {
             Ok(response)
