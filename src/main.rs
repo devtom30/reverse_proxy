@@ -10,6 +10,7 @@ use std::{convert::Infallible, net::SocketAddr};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use valkey::Client;
+use app_properties::AppProperties;
 
 /*
 1. URL request dropofculture.com/tag/TAG
@@ -25,7 +26,7 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Result<Response<Body>, Infallible> {
+async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>, shared2: Arc<HashMap<String, String>>) -> Result<Response<Body>, Infallible> {
     let redirect_uri = "http://127.0.0.1:8084";
     let tag_extracted_option = extract_tag_from_request(req.uri().path());
     if tag_extracted_option.is_some() {
@@ -142,18 +143,24 @@ fn find_tag_relative_to_token(token: &str, tag_token_map: Arc<Mutex<HashMap<Stri
 #[tokio::main]
 async fn main() {
     let bind_addr = "127.0.0.1:8000";
+    let properties: AppProperties = AppProperties::new();
+    let conf = Conf::from(properties);
+
     let addr:SocketAddr = bind_addr.parse().expect("Could not parse ip:port.");
 
     let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
     let shared = Arc::new(Mutex::new(HashMap::new()));
+    let shared2: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
 
     let make_svc = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr().ip();
         let shared = shared.clone();
+        let shared2 = shared2.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let shared = shared.clone();
-                handle(remote_addr, req, shared)
+                let shared2 = shared2.clone();
+                handle(remote_addr, req, shared, shared2)
             }))
         }
     });
@@ -164,6 +171,24 @@ async fn main() {
 
     if let Err(e) = server.await {
         eprintln!("server error: {}", e);
+    }
+}
+
+struct Conf {
+    redirect_uri: String,
+}
+
+impl From<AppProperties> for Conf {
+    fn from(value: AppProperties) -> Self {
+        ["redirect_uri", "bind_addr"].iter()
+            .filter(|str| value.get(str).is_empty())
+            .for_each(|str| {
+                println!("{} is not set, can't start", str);
+                std::process::exit(1);
+            });
+        Conf {
+            redirect_uri: value.get("redirect_uri").parse().unwrap()
+        }
     }
 }
 
