@@ -26,8 +26,8 @@ fn debug_request(req: Request<Body>) -> Result<Response<Body>, Infallible>  {
     Ok(Response::new(Body::from(body_str)))
 }
 
-async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>, shared2: Arc<HashMap<String, String>>) -> Result<Response<Body>, Infallible> {
-    let redirect_uri = "http://127.0.0.1:8084";
+async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<HashMap<String, Vec<String>>>>, conf: Conf) -> Result<Response<Body>, Infallible> {
+    let redirect_uri = &conf.redirect_uri;
     let tag_extracted_option = extract_tag_from_request(req.uri().path());
     if tag_extracted_option.is_some() {
         let tag_requested = tag_extracted_option.unwrap();
@@ -142,25 +142,24 @@ fn find_tag_relative_to_token(token: &str, tag_token_map: Arc<Mutex<HashMap<Stri
 
 #[tokio::main]
 async fn main() {
-    let bind_addr = "127.0.0.1:8000";
     let properties: AppProperties = AppProperties::new();
     let conf = Conf::from(properties);
 
+    let bind_addr = &conf.bind_addr;
     let addr:SocketAddr = bind_addr.parse().expect("Could not parse ip:port.");
 
     let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
     let shared = Arc::new(Mutex::new(HashMap::new()));
-    let shared2: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
 
     let make_svc = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr().ip();
         let shared = shared.clone();
-        let shared2 = shared2.clone();
+        let conf = conf.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let shared = shared.clone();
-                let shared2 = shared2.clone();
-                handle(remote_addr, req, shared, shared2)
+                let conf = conf.clone();
+                handle(remote_addr, req, shared, conf)
             }))
         }
     });
@@ -174,8 +173,10 @@ async fn main() {
     }
 }
 
+#[derive(Clone)]
 struct Conf {
     redirect_uri: String,
+    bind_addr: String,
 }
 
 impl From<AppProperties> for Conf {
@@ -187,7 +188,8 @@ impl From<AppProperties> for Conf {
                 std::process::exit(1);
             });
         Conf {
-            redirect_uri: value.get("redirect_uri").parse().unwrap()
+            redirect_uri: value.get("redirect_uri").parse().unwrap_or(String::from("http://localhost:8084")),
+            bind_addr: value.get("bind_addr").parse().unwrap_or(String::from("localhost:8000")),
         }
     }
 }
