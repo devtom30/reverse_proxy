@@ -96,7 +96,7 @@ async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<Has
 
     println!("tag_from_token found {}", tag_from_token.unwrap());
 
-    return match hyper_reverse_proxy::call(client_ip, redirect_uri, req_new).await {
+    match hyper_reverse_proxy::call(client_ip, redirect_uri, req_new).await {
         Ok(response) => {
             Ok(response)
         }
@@ -105,27 +105,6 @@ async fn handle(client_ip: IpAddr, mut req: Request<Body>, shared: Arc<Mutex<Has
             .body(Body::empty())
             .unwrap())}
     }
-
-            /*match find_tag_relative_to_token(token, &map) {
-                None => {
-                    return Ok(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::empty())
-                        .unwrap());
-                }
-                Some(tag) => {
-                    match hyper_reverse_proxy::call(client_ip, redirect_uri, req).await {
-                        Ok(response) => {
-                            Ok(response)
-                        }
-                        Err(_error) => {Ok(Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Body::empty())
-                            .unwrap())}
-                    }
-                }
-            }*/
-
 }
 
 fn find_tag_relative_to_token(token: &str, tag_token_map: Arc<Mutex<HashMap<String, Vec<String>>>>) -> Option<String> {
@@ -147,8 +126,7 @@ async fn main() {
 
     let bind_addr = &conf.bind_addr;
     let addr:SocketAddr = bind_addr.parse().expect("Could not parse ip:port.");
-
-    let mut token_map: HashMap<String, Vec<String>> = HashMap::new();
+    
     let shared = Arc::new(Mutex::new(HashMap::new()));
 
     let make_svc = make_service_fn(|conn: &AddrStream| {
@@ -165,7 +143,7 @@ async fn main() {
     });
 
     let server = Server::bind(&addr).serve(make_svc);
-
+    
     println!("Running server on {:?}", addr);
 
     if let Err(e) = server.await {
